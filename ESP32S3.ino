@@ -1,6 +1,5 @@
 // ================================================================
-//  ESP32-S3 — CONTROLLER (CHỈ FIX LỖI GEMINI 400 & JOYSTICK)
-//  - Fix chính tả API Google (inlineData, mimeType)
+//  ESP32-S3 — CONTROLLER
 //  - 1 Click = Local AI, 2 Click = Gemini AI
 // ================================================================
 #include <Adafruit_GFX.h>
@@ -22,16 +21,16 @@
 
 char wifiSSID[64] = "Honor Magic6 Pro";
 char wifiPASS[64] = "tamsotam";
-#define GEMINI_API_KEY "AIzaSyAnirBSAQDfGsX1XHW7cpYUFfsXbD_SiWA"
+#define GEMINI_API_KEY                                                         \
+  "AIzaSyAnirBSAQDfGsX1XHW7cpYUFfsXbD_SiWA" // Gemini API key
 #define AP_SSID "MEI-Controller"
 #define AP_PASS "mei12345"
 #define WIFI_SSID wifiSSID
 #define WIFI_PASS wifiPASS
 
 #define TELEGRAM_BOT_TOKEN                                                     \
-  "8785859839:AAExccWXsA-k1ljx_CtbgBjGxF8dbk_kPEs" // Diem thong tin bot token
-                                                   // cua ban
-#define TELEGRAM_CHAT_ID "1471617872"              // Chat ID cua ban hoac Group
+  "8785859839:AAExccWXsA-k1ljx_CtbgBjGxF8dbk_kPEs" // Bot token Telegram
+#define TELEGRAM_CHAT_ID "1471617872"              // Chat ID or Group Telegram
 
 #define SPI_SCK 12
 #define SPI_MOSI 11
@@ -59,7 +58,7 @@ Adafruit_ST7789 tft(&sharedSPI, TFT_CS, TFT_DC, TFT_RST);
 #define I2S_PORT I2S_NUM_0
 #define SAMPLE_RATE 16000
 
-// Thời gian ghi âm tùy chỉnh riêng biệt
+// Separate custom recording time
 #define GEMINI_RECORD_SECS 1.5
 #define LOCAL_RECORD_SECS 2.0
 #define GEMINI_REC_BYTES ((int)(SAMPLE_RATE * GEMINI_RECORD_SECS * 2))
@@ -74,7 +73,7 @@ volatile bool isTelegramSending = false;
 #define CONN_LOST_MS 12000UL
 #define ALERT_CD_MS 30000UL
 
-// Cấu hình chuẩn Pin 2S
+// Standard 2S Battery configuration
 #define BAT_MAX 8.4f
 #define BAT_MIN 6.8f
 #define BAT_LO 7.2f
@@ -118,12 +117,9 @@ bool aiPanelOn = false;
 unsigned long aiPanelMs = 0;
 enum AiState { AI_IDLE, AI_RECORDING, AI_PROCESSING, AI_SHOWING };
 AiState aiState = AI_IDLE;
-// ==== BỘ NHỚ LÕI TRÁNH PHÂN MẢNH MÃI MÃI ====
-// Tránh dùng malloc/free trên ESP32 vì TLS handshake cần một mảng RAM
-// contiguous 40KB.
 uint8_t staticWavBuf[MAX_REC_BYTES + 44 + 4];
 int8_t *recBuf = (int8_t *)(staticWavBuf + 44);
-char staticPayloadBuf[68000]; // 68KB đủ sức chứa Base64 của 1.5s Audio
+char staticPayloadBuf[68000]; // 68KB is enough for Base64 of 1.5s Audio
 // ============================================
 volatile bool triggerWifiScan = false;
 
@@ -410,14 +406,15 @@ void telegramTask(void *pvParameters) {
   while (1) {
     char msgBuf[512];
     if (xQueueReceive(telegramQueue, &msgBuf, portMAX_DELAY)) {
-      // ĐỢI GEMINI DÙNG XONG RAM TRƯỚC KHI GỬI TELEGRAM ĐỂ CHỐNG TRÀN RAM DÂY
-      // CHUYỀN
+      // WAIT FOR GEMINI TO FINISH USING RAM BEFORE SENDING TELEGRAM TO PREVENT
+      // RAM OVERFLOW TRANSFER
       while (aiState != AI_IDLE) {
         vTaskDelay(500 / portTICK_PERIOD_MS);
       }
 
       isTelegramSending = true;
-      if (!wifiOnline || String(TELEGRAM_BOT_TOKEN) == "YOUR_BOT_TOKEN_HERE") {
+      if (!wifiOnline || String(TELEGRAM_BOT_TOKEN) ==
+                             "8785859839:AAExccWXsA-k1ljx_CtbgBjGxF8dbk_kPEs") {
         isTelegramSending = false;
         continue;
       }
@@ -428,9 +425,10 @@ void telegramTask(void *pvParameters) {
       WiFiClientSecure client;
       client.setInsecure();
       HTTPClient http;
-      http.setTimeout(5000); // TIMEOUT CẤP TỐC CHỐNG LƯU PHIÊN
-      String url = "https://api.telegram.org/bot" + String(TELEGRAM_BOT_TOKEN) +
-                   "/sendMessage?chat_id=" + String(TELEGRAM_CHAT_ID) +
+      http.setTimeout(5000); // FAST TIMEOUT TO PREVENT SESSION HANG
+      String url = "https://api.telegram.org/bot" +
+                   String(8785859839 : AAExccWXsA - k1ljx_CtbgBjGxF8dbk_kPEs) +
+                   "/sendMessage?chat_id=" + String(1471617872) +
                    "&text=" + message;
       http.begin(client, url);
       int code = http.GET();
@@ -445,15 +443,14 @@ void telegramTask(void *pvParameters) {
   }
 }
 
-// Tiết kiệm đáng kể RAM bằng cách vô hiệu hóa Telegram Task (Vốn chiếm ~50KB
-// RAM mỗi lần gọi)
+// Significantly save RAM by disabling Telegram Task
 void sendTelegramAlert(String message) {
   if (telegramQueue) {
     char msgBuf[512];
     strncpy(msgBuf, message.c_str(), 511);
     msgBuf[511] = '\0';
     xQueueSend(telegramQueue, &msgBuf,
-               0); // Không chờ đợi, nhường RAM cho Web/Màn hình
+               0); // Do not wait, yield RAM for Web/Screen
   }
 }
 
@@ -501,8 +498,7 @@ void startWeb() {
   });
 
   webSrv.on("/scan", HTTP_GET, [](AsyncWebServerRequest *r) {
-    // SỬA LỖI CRASH ESP32-S3: Chuyển lệnh quét WiFi ra vòng lặp loop() chính
-    // Tuyệt đối không gọi WiFi.scanNetworks từ trong LwIP callback
+    // Move WiFi scan to main loop()
     triggerWifiScan = true;
     r->send(200, "text/plain", "SCANNING");
   });
@@ -778,7 +774,7 @@ void updCompassNeedle(float heading, char fallbackDir) {
   if (heading >= 0 && heading < 360)
     snprintf(hbuf, 8, "%3.0f\xF8", drawH);
   else
-    snprintf(hbuf, 8, "---"); // Báo hiệu la bàn ảo
+    snprintf(hbuf, 8, "---"); // Signal virtual compass
   tft.print(hbuf);
 }
 
@@ -1364,7 +1360,7 @@ void triggerLocalAI() {
 }
 
 // ================================================================
-//  HÀM GEMINI AI (ĐÃ FIX API 400 - KHÔNG DẤU TIẾNG VIỆT)
+//  GEMINI AI FUNCTION
 // ================================================================
 void triggerGeminiAI() {
   if (isTelegramSending) {
@@ -1430,12 +1426,10 @@ void triggerGeminiAI() {
   wavHeader[39] = 'a';
   memcpy(wavHeader + 40, &dataSize, 4);
 
-  // ===================== TIẾN HÓA CỨU RAM CẤP TỐC =====================
-  // Gán đè WAV Header ngay vào khoảng trống 44 byte chuẩn bị sẵn trước recBuf!
   memcpy(staticWavBuf, wavHeader, 44);
   size_t wavLen = 44 + bytesRead;
 
-  // Tính kích thước Base64
+  // Calculate Base64 size
   size_t b64Len = 0;
   mbedtls_base64_encode(NULL, 0, &b64Len, staticWavBuf, wavLen);
 
@@ -1456,7 +1450,6 @@ void triggerGeminiAI() {
     return;
   }
 
-  // Ghép JSON thẳng vào bộ đệm tĩnh (Tuyệt đối không phân mảnh heap)
   memcpy(staticPayloadBuf, prefix, prefixLen);
   mbedtls_base64_encode((unsigned char *)(staticPayloadBuf + prefixLen),
                         b64Len + 1, &b64Len, staticWavBuf, wavLen);
@@ -1546,25 +1539,21 @@ void setup() {
   i2sInit();
 
   // ================================================================
-  //  CHIẾN THUẬT WIFI MỚI: QUÉT TRƯỚC, KẾT NỐI SAU
+  // SCAN FIRST, CONNECT LATER
   // ================================================================
 
-  // KHỞI ĐỘNG DRIVER WIFI TRƯỚC TIÊN (NẾU KHÔNG GỌI DISCONNECT SẼ BỊ CRASH
-  // BOOTLOOP!)
+  // INITIALIZE WIFI DRIVER FIRST
   WiFi.mode(WIFI_AP_STA);
-  WiFi.setSleep(false); // TẮT NGỦ WIFI ĐỂ JOYSTICK CHẠY MƯỢT MÀ 0MS DELAY
+  WiFi.setSleep(false); // TURN OFF WIFI SLEEP FOR SMOOTH JOYSTICK
 
-  // XÓA SẠCH BỘ NHỚ NVS CỦA WIFI ĐỂ KHÔNG BỊ LẠM DỤNG AUTO-RECONNECT
+  // CLEAR WIFI NVS MEMORY TO PREVENT AUTO-RECONNECT
   WiFi.persistent(false);
-  WiFi.disconnect(); // Ngắt an toàn
+  WiFi.disconnect(); // Safe interrupt
   delay(10);
-
-  // Không dùng malloc cho recBuf nữa vì đã khai báo mảng tĩnh cực an toàn ở
-  // trên.
 
   Serial.println("[WiFi] Dang quet kiem tra Hotspot...");
   int nScan =
-      WiFi.scanNetworks(false, false, false, 300); // Quét nhanh 300ms/kênh
+      WiFi.scanNetworks(false, false, false, 300); // Fast scan 300ms/channel
   bool hotspotFound = false;
   for (int i = 0; i < nScan; i++) {
     if (WiFi.SSID(i) == WIFI_SSID) {
@@ -1574,10 +1563,10 @@ void setup() {
       break;
     }
   }
-  WiFi.scanDelete(); // Xóa kết quả scan giải phóng RAM
+  WiFi.scanDelete(); // Clear scan results to free RAM
 
   if (hotspotFound) {
-    // BƯỚC 2A: CÓ HOTSPOT -> Kết nối bình thường (AP_STA)
+    // STEP 2A: HOTSPOT AVAILABLE -> Connect normally (AP_STA)
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("[WiFi] Connecting");
     for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
@@ -1587,33 +1576,29 @@ void setup() {
     wifiOnline = (WiFi.status() == WL_CONNECTED);
     if (wifiOnline) {
       Serial.println("\n[WiFi] DA KET NOI THANH CONG!");
-      // BẮT BUỘC ÉP KHỚP KÊNH GIỮA AP VÀ STA NẾU KHÔNG ESP32 SẼ CHẾT LÂM SÀNG
-      // VÌ NHẢY KÊNH LIÊN TỤC
       WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                         IPAddress(255, 255, 255, 0));
-      WiFi.softAP(AP_SSID, AP_PASS,
-                  WiFi.channel()); // TRUYỀN VÀO WiFi.channel() ĐỂ ĐỒNG BỘ 100%
+      WiFi.softAP(AP_SSID, AP_PASS, WiFi.channel());
     } else {
-      // Tìm thấy nhưng kết nối thất bại -> Quay về Kênh 1
-      WiFi.setAutoReconnect(false); // KHÔNG TỰ QUÉT LẠI ĐỂ TRÁNH LAG RADIO
-      WiFi.disconnect(); // Ngắt dò tìm mạng nhưng KHÔNG TẮT module STA
-      // KHÔNG ĐƯỢC CHUYỂN SANG WIFI_AP VÌ SẼ LÀM MẤT MAC ADDRESS CỦA STA
-      // (khiến mạch bị điếc)
+      // Found but connection failed -> Return to Channel 1
+      WiFi.setAutoReconnect(false); // DO NOT AUTO RESCAN TO AVOID RADIO LAG
+      WiFi.disconnect(); // Stop network scanning but DO NOT TURN OFF STA module
+      // DO NOT SWITCH TO WIFI_AP AS IT WILL LOSE STA MAC ADDRESS
       WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                         IPAddress(255, 255, 255, 0));
       WiFi.softAP(AP_SSID, AP_PASS, 1);
       Serial.println("\n[WiFi] Ket noi that bai. Chuyen ve kenh 1.");
     }
   } else {
-    // BƯỚC 2B: KHÔNG CÓ HOTSPOT -> KHÔNG GỌI WiFi.begin()!
-    // Đây là bí quyết: không gọi WiFi.begin() = radio KHÔNG BAO GIỜ nhảy
-    // kênh!
-    WiFi.setAutoReconnect(false); // CHẮC CHẮN KHÔNG QUÉT LẠI
-    WiFi.disconnect();            // Ngắt dò tìm thay vì tắt toàn bộ
-    // KHÔNG ĐƯỢC CHUYỂN SANG WIFI_AP VÌ SẼ LÀM MẤT MAC ADDRESS CỦA STA
+    // STEP 2B: NO HOTSPOT -> DO NOT CALL WiFi.begin()!
+    // No WiFi.begin() call = radio NEVER changes channel!
+
+    WiFi.setAutoReconnect(false); // NO RESCAN
+    WiFi.disconnect(); // Stop scanning instead of turning off completely
+    // DO NOT SWITCH TO WIFI_AP AS IT WILL LOSE STA MAC ADDRESS
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                       IPAddress(255, 255, 255, 0));
-    WiFi.softAP(AP_SSID, AP_PASS, 1); // Ép cứng kênh 1
+    WiFi.softAP(AP_SSID, AP_PASS, 1); // Force to channel 1
     Serial.println("[WiFi] Khong co Hotspot. Kenh 1. ESP-NOW on dinh!");
   }
 
@@ -1642,7 +1627,8 @@ void setup() {
   peer.encrypt = false;
   esp_now_add_peer(&peer);
 
-  // KÍCH HOẠT TIẾN TRÌNH TELEGRAM CÓ KIỂM SOÁT ĐỂ CHỐNG TRÀN RAM KHI DÙNG AI
+  // ACTIVATE TELEGRAM PROCESS WITH CONTROL TO PREVENT RAM OVERFLOW WHEN USING
+  // AI
   telegramQueue = xQueueCreate(10, 512);
   if (telegramQueue != NULL) {
     xTaskCreatePinnedToCore(telegramTask, "TeleTask", 8192, NULL, 1, NULL, 0);
@@ -1675,14 +1661,14 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Chạy quét WiFi an toàn ở Core 1 để không bị Crash LwIP Watchdog
+  // Run safe WiFi scan on Core 1 to prevent Crash
   if (triggerWifiScan) {
     triggerWifiScan = false;
     WiFi.scanNetworks(true);
   }
 
-  // CHỐNG SẬP MẠCH KHI KẾT NỐI WIFI SAI MẬT KHẨU
-  // Tách block HTTP_POST và giao phần xử lý kết nối cho Main Loop Non-blocking
+  // PREVENT CIRCUIT CRASH ON WRONG WIFI PASSWORD
+
   if (triggerWifiConnect) {
     triggerWifiConnect = false;
     WiFi.disconnect();
@@ -1696,16 +1682,17 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) {
       wfState = WF_CONNECTED;
       wifiOnline = true;
-      WiFi.softAP(AP_SSID, AP_PASS, WiFi.channel()); // Đồng bộ kênh AP an toàn
+      WiFi.softAP(AP_SSID, AP_PASS, WiFi.channel()); // Safe AP channel sync
       Serial.printf("[WiFi] KET NOI THANH CONG! IP: %s\n",
                     WiFi.localIP().toString().c_str());
     } else if (millis() - wfAttemptMs > 12000) {
-      // Nếu 12 giây mà vẫn chưa vào được -> Sai pass hoặc chết mạng
+      // If not connected after 12 seconds -> Wrong pass or dead network
       wfState = WF_FAILED;
       wifiOnline = false;
       WiFi.setAutoReconnect(false);
       WiFi.disconnect();
-      WiFi.softAP(AP_SSID, AP_PASS, 1); // Lui về kênh 1 bảo tồn sóng ESPNOW
+      WiFi.softAP(AP_SSID, AP_PASS,
+                  1); // Revert to channel 1 to preserve ESPNOW signal
       Serial.println("[WiFi] LOI! SAI MAT KHAU HOAC MAT MANG! HUY VA QUAY VE "
                      "KENH 1 AN TOAN.");
     }
@@ -1862,16 +1849,11 @@ void loop() {
     swClickCnt = 0;
   }
 
-  // ================================================================
-  //  JOYSTICK DI CHUYỂN: ĐÃ ĐẢO CHIỀU TRỤC Y & FIX LỖI LA BÀN
-  // ================================================================
   static unsigned long lJ = 0;
   static char lC = 'S';
   static int lSpd = 0;
 
-  if (!homeMode && aiState == AI_IDLE &&
-      now - lJ > 40) { // Giảm delay từ 80ms xuống 40ms (Tốc độ quét tay lái
-                       // 25 FPS siêu mượt)
+  if (!homeMode && aiState == AI_IDLE && now - lJ > 40) {
     lJ = now;
     int x = analogRead(JOY_X);
     int y = analogRead(JOY_Y);
@@ -1922,7 +1904,7 @@ void loop() {
       curDir = dir;
       curSpd = spd;
 
-      //  ĐÃ SỬA LẠI ĐÚNG HÀM LA BÀN CỦA BẢN MỚI
+      //  CORRECTED COMPASS FUNCTION FOR NEW VERSION
       updCompassNeedle(rx.heading, dir);
 
       cache.dir = '?';
