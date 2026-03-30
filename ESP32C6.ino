@@ -8,13 +8,13 @@
 #include <Wire.h>
 #include <esp_now.h>
 
-// ── Chân motor ────────────────────────────────────────────────
+// ── Motor pin ────────────────────────────────────────────────
 #define IN1 15
 #define IN2 23
 #define IN3 22
 #define IN4 21
 
-// ── Chân cảm biến ─────────────────────────────────────────────
+// ── Sensor pin ─────────────────────────────────────────────
 #define GPS_RX_PIN 6
 #define GPS_TX_PIN 7
 #define PH_PIN 0
@@ -26,7 +26,7 @@
 #define I2C_SDA 4
 #define I2C_SCL 5
 
-// ── Chân LoRa (Theo đúng bạn cắm) ─────────────────────────────
+// ── LoRa pins ─────────────────────────────
 #define LORA_SCK 18
 #define LORA_MISO 20
 #define LORA_MOSI 11
@@ -38,9 +38,9 @@
 bool loraReady = false;
 
 uint8_t diaChiBo[] = {0x3C, 0x0F, 0x02,
-                      0xD6, 0x3B, 0x30}; // Địa chỉ MAC của Tay Cầm
+                      0xD6, 0x3B, 0x30}; // MAC address of Controller (ESP32S3)
 
-// ── Struct dữ liệu (Đồng bộ 100% với mạch Tay Cầm S3) ─────────
+// ── Data structures ─────────
 typedef struct {
   char lenh;
   int tocDo;
@@ -64,26 +64,21 @@ SensorData duLieuGui;
 RemoteCommand lenhMoi;
 esp_now_peer_info_t thongTinKetNoi;
 
-// ── Cờ báo lệnh ───────────────────────────────────────────────
+// ── Command flags ───────────────────────────────────────────────
 volatile char pendingLenh = 'S';
 volatile int pendingTocDo = 0;
 
-void thucThiLenh(char lenh, int tocDo); // Khai báo trước hàm Motor
+void thucThiLenh(char lenh, int tocDo);
 
 void khiNhanDuocLenh(const esp_now_recv_info *info, const uint8_t *data,
                      int len) {
   if (len < (int)sizeof(RemoteCommand))
     return;
   memcpy(&lenhMoi, data, sizeof(RemoteCommand));
-
-  // SỬA LỖI DELAY (TRỄ LÁI): CHẠY THẲNG HÀM MOTOR NGAY TẠI CA CA CỦA CORTEX-M4!
-  // Đoạn code này được kích hoạt bởi ngắt (Interrupt) của nhân WiFi (Core 0),
-  // Nó sẽ chạy tức thời bỏ qua bất kỳ thứ gì đang cản đường ở vòng Loop (Dù là
-  // LoRa hay Nhiệt độ)!
   thucThiLenh(lenhMoi.lenh, lenhMoi.tocDo);
 }
 
-// ── Khởi tạo thiết bị ─────────────────────────────────────────
+// ── Device initialization ─────────────────────────────────────────
 OneWire oneWire(TEMP_PIN);
 DallasTemperature sensorsTemp(&oneWire);
 MPU9250_WE mpu = MPU9250_WE(0x68);
@@ -99,11 +94,10 @@ uint32_t boatPing = 0;
 double homeLat = 0, homeLon = 0;
 bool homeSet = false;
 
-// Biến lưu trữ cho bộ lọc Pin chống "Parkinson"
+// Storage variables for Battery filter
 static float smoothedBatVolt = -1.0f;
 
-// ── Điều khiển Motor ──────────────────────────────────────────
-// (ĐÃ ĐẢO CHIỀU: Thực tế chân quạt lắp ngược nên đổi Tiến <-> Lùi)
+// ── Motor control ──────────────────────────────────────────
 void diThang(int s) {
   analogWrite(IN1, 0);
   analogWrite(IN2, s);
@@ -138,7 +132,7 @@ void dungLai() {
 void thucThiLenh(char lenh, int tocDo) {
   if (isReturning == 1) {
     if (lenh != 'S')
-      isReturning = 0; // Hủy tự động quay về nếu tay cầm có tác động
+      isReturning = 0; // Cancel auto-return if controller has input
     else
       return;
   }
@@ -168,7 +162,7 @@ void thucThiLenh(char lenh, int tocDo) {
   }
 }
 
-// ── Bộ lọc Số (Median + Mean Filter) Khử nhiễu Cảm Biến ─────────
+// ── Digital Filter (Median + Mean Filter) for Sensor Noise Reduction ─────────
 int getStableADC(int pin) {
   int buf[15];
   for (int i = 0; i < 15; i++) {
@@ -185,13 +179,13 @@ int getStableADC(int pin) {
   }
   int sum = 0;
   for (int i = 5; i < 10; i++)
-    sum += buf[i]; // Lấy 5 giá trị ở giữa để tính trung bình
+    sum += buf[i]; // Take 5 middle values to calculate the average
   return sum / 5;
 }
 
-// ── Đọc toàn bộ cảm biến ──────────────────────────────────────
+// ── Read all sensors ──────────────────────────────────────
 void docCamBien() {
-  // 1. Đọc Pin có bộ lọc EMA siêu mượt
+  // 1. Read Battery with EMA filter
   float currentBat = ina219.getBusVoltage_V();
   if (smoothedBatVolt < 0) {
     smoothedBatVolt = currentBat;
@@ -200,10 +194,9 @@ void docCamBien() {
   }
   batVolt = smoothedBatVolt;
 
-  // 2. Đọc các cảm biến nước (ĐÃ ÁP DỤNG LỌC NHIỄU VÀ CALIB)
+  // 2. Read water sensors
   int adcPH = getStableADC(PH_PIN);
   float vPH = adcPH * (3.3f / 4095.0f);
-  // Đảo chiều hệ số góc pH (Điện áp tăng -> pH tăng) do module đo bị ngược
   ph = 7.00f + 5.70f * (vPH - 1.65f);
   if (ph < 0)
     ph = 0;
@@ -212,7 +205,7 @@ void docCamBien() {
 
   int adcTDS = getStableADC(TDS_PIN);
   float vTDS = adcTDS * (3.3f / 4095.0f);
-  // Bù trừ sai số nhiệt độ để TDS không bị nhảy số (Compensation Coefficient)
+  // Temperature error compensation for TDS (Compensation Coefficient)
   float tempK = temp_ > 0 ? temp_ : 25.0f;
   float compK = 1.0f + 0.02f * (tempK - 25.0f);
   if (compK < 0.1f)
@@ -222,33 +215,27 @@ void docCamBien() {
       (int)((133.42f * compVoltage * compVoltage * compVoltage -
              255.86f * compVoltage * compVoltage + 857.39f * compVoltage) *
             0.5f);
-  // Chống nhiễu đỉnh (Spike filter) cho TDS
+  // Anti-noise (Spike filter) for TDS
   static int lastTds = 0;
-  tds = (rawTds * 0.4f) + (lastTds * 0.6f); // Tăng độ phản hồi nhạy của TDS
+  tds = (rawTds * 0.4f) + (lastTds * 0.6f); // Increase TDS fast response sensitivity
   lastTds = tds;
 
   int adcNTU = getStableADC(TURB_PIN);
-  // Trả về chiều thuận cho Cảm biến Độ Đục (Module xuất Volt thấp = sạch, Volt
-  // cao = đục)
   ntu = map(adcNTU, 0, 4095, 0, 3000);
   if (ntu < 0)
     ntu = 0;
   if (ntu > 3000)
     ntu = 3000;
 
-  // 3. Đọc nhiệt độ (Bật lại Delay 94ms để hỗ trợ cáp cảm biến Parasite Power)
+  // 3. Read temperature
   sensorsTemp.requestTemperatures();
   float t = sensorsTemp.getTempCByIndex(0);
   temp_ = (t <= -100.0f || t == 85.0f) ? -127.0f : t;
 }
 
-// ── Cài đặt ban đầu ───────────────────────────────────────────
+// ── Initial setup ───────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-
-  // SỬA LỖI GPS: Tăng bộ đệm Serial lên 1024 bytes để chống tràn dữ liệu gây
-  // mất/sai tọa độ (Vì thư viện LoRa và Nhiệt độ chiếm dụng CPU làm quá trình
-  // đọc GPS bị gián đoạn ~250ms)
   Serial1.setRxBufferSize(1024);
   Serial1.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
@@ -262,11 +249,11 @@ void setup() {
   // I2C
   Wire.begin(I2C_SDA, I2C_SCL);
 
-  // Khởi động INA219
+  // Initialize INA219
   if (!ina219.begin())
     Serial.println("[WARN] INA219 khong tim thay");
 
-  // Khởi động MPU9250
+  // Initialize MPU9250
   if (!mpu.init()) {
     Serial.println("[ERR] Khong the ket noi den MPU9250_WE o dia chi 0x68");
   } else {
@@ -282,23 +269,24 @@ void setup() {
     }
   }
 
-  // Khởi động Cảm biến nhiệt độ
+  // Initialize Temperature sensor
   sensorsTemp.begin();
   sensorsTemp.setWaitForConversion(true);
   sensorsTemp.setResolution(9);
 
-  // XÓA SẠCH BỘ NHỚ NVS CỦA WIFI ESP32!
+  // CLEAR WIFI NVS MEMORY OF ESP32!
   WiFi.persistent(false);
   WiFi.disconnect(true);
   delay(100);
 
-  // Khởi động ESP-NOW
+  // Initialize ESP-NOW
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
-  // ĐỒNG BỘ KÊNH WI-FI CHUẨN XÁC VÀ TỰ ĐỘNG 100%:
-  // Kết nối thẳng vào AP của Tay Cầm. Wi-Fi driver sẽ tự động bám theo Kênh của
-  // Tay Cầm mãi mãi!
+  // SYNC WI-FI CHANNEL:
+  // Connect directly to Controller's AP. Wi-Fi driver will auto-sync with the channel of
+  // Controller (ESP32-S3)!
+  //
   Serial.println("Dang ket noi vao MEI-Controller de dong bo Kenh...");
   WiFi.begin("MEI-Controller", "mei12345");
 
@@ -310,11 +298,11 @@ void setup() {
 
   memset(&thongTinKetNoi, 0, sizeof(thongTinKetNoi));
   memcpy(thongTinKetNoi.peer_addr, diaChiBo, 6);
-  thongTinKetNoi.channel = 0; // 0 = Tự động bám theo kênh của WiFi.begin()
+  thongTinKetNoi.channel = 0; // 0 = Auto track WiFi.begin() channel
   thongTinKetNoi.encrypt = false;
   esp_now_add_peer(&thongTinKetNoi);
 
-  // Khởi động LoRa (Backup)
+  // Initialize LoRa (Backup)
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   LoRa.setSPI(SPI);
   LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
@@ -332,13 +320,10 @@ void setup() {
   Serial.println("[OK] Thuyen ESP32-C6 San Sang!");
 }
 
-// ── Vòng lặp chính ────────────────────────────────────────────
+// ── Main loop ────────────────────────────────────────────
 void loop() {
   unsigned long now = millis();
-
-  // (Đã chuyển hàm Motor sang thẳng hàm ngắt ESP-NOW để giảm delay tuyệt đối)
-
-  // 1.1 Tính năng Tự Động Quay Về (Auto Return To Home) qua GPS
+  // 1.1 Auto Return To Home feature via GPS
   static unsigned long lastNav = 0;
   if (isReturning == 1 && (now - lastNav > 200)) {
     lastNav = now;
@@ -379,7 +364,7 @@ void loop() {
     }
   }
 
-  // 1.5. Cập nhật dữ liệu từ MPU9250_WE
+  // 1.5. Update data from MPU9250
   static unsigned long lastMpu = 0;
   if (now - lastMpu >= 100) {
     lastMpu = now;
@@ -408,7 +393,7 @@ void loop() {
     }
   }
 
-  // 2. Cập nhật GPS liên tục bằng TinyGPSPlus
+  // 2. Update GPS continuously
   while (Serial1.available() > 0) {
     if (gps.encode(Serial1.read())) {
       if (gps.location.isValid()) {
@@ -424,14 +409,14 @@ void loop() {
       if (gps.speed.isValid()) {
         gpsSpeedKt = gps.speed.knots();
         if (gpsSpeedKt < 1.5f)
-          gpsSpeedKt = 0.0f; // Lọc bỏ tốc độ ảo (Drift) khi đứng im
+          gpsSpeedKt = 0.0f; // Filter out virtual speed (Drift) when stationary
       }
       if (gps.course.isValid())
         gpsCourse = gps.course.deg();
     }
   }
 
-  // 3. Đo cảm biến và gửi về Tay Cầm mỗi 200ms
+  // 3. Read sensors and send to Controller every 200ms
   static unsigned long lastRead = 0;
   if (now - lastRead >= 200) {
     lastRead = now;
@@ -454,10 +439,10 @@ void loop() {
     duLieuGui.isReturning = isReturning;
     duLieuGui.boatPing = ++boatPing;
 
-    // Bắn qua ESP-NOW
+    // Send via ESP-NOW
     esp_now_send(diaChiBo, (uint8_t *)&duLieuGui, sizeof(duLieuGui));
 
-    // Bắn qua LoRa
+    // Send via LoRa
     if (loraReady) {
       LoRa.beginPacket();
       LoRa.write((uint8_t *)&duLieuGui, sizeof(duLieuGui));
