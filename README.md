@@ -57,5 +57,3 @@ In an aquatic environment, signal degradation is a critical concern, so we desig
 
 ## ⚠️ Notes for Production / Modifying
 The **Web Server and Wi-Fi Scanning System** is heavily optimized under an **Asynchronous execution loop pattern** designed to temporarily sleep connections so it won't trigger **LwIP Core Panics** alongside audio transmission to Google Gemini AI.
-
-*Developed with passion for Aquaculture 4.0!*
